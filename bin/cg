@@ -1,0 +1,590 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  cg — Context Garden CLI
+#  管理个人 AI 上下文：Skill、项目上下文、模板、记忆
+# ============================================================================
+set -euo pipefail
+
+# ── 路径配置 ────────────────────────────────────────────────
+# 自动检测仓库根目录（脚本所在目录的上一级）
+CG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export CG_ROOT
+
+# ── 颜色 ────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  CG_CYAN='\033[36m'
+  CG_GREEN='\033[32m'
+  CG_YELLOW='\033[33m'
+  CG_RED='\033[31m'
+  CG_BOLD='\033[1m'
+  CG_DIM='\033[2m'
+  CG_RESET='\033[0m'
+else
+  CG_CYAN=''
+  CG_GREEN=''
+  CG_YELLOW=''
+  CG_RED=''
+  CG_BOLD=''
+  CG_DIM=''
+  CG_RESET=''
+fi
+
+# ── 工具函数 ────────────────────────────────────────────────
+cg_info()  { printf "${CG_CYAN}${CG_BOLD}ℹ${CG_RESET}  %s\n" "$*"; }
+cg_ok()    { printf "${CG_GREEN}${CG_BOLD}✓${CG_RESET}  %s\n" "$*"; }
+cg_warn()  { printf "${CG_YELLOW}${CG_BOLD}⚠${CG_RESET}  %s\n" "$*"; }
+cg_error() { printf "${CG_RED}${CG_BOLD}✗${CG_RESET}  %s\n" "$*" >&2; }
+
+cg_separator() {
+  printf "${CG_DIM}─────────────────────────────────────────────────${CG_RESET}\n"
+}
+
+# 从 frontmatter 提取字段值
+cg_frontmatter_field() {
+  local file="$1" field="$2"
+  sed -n "/^---$/,/^---$/p" "$file" \
+    | grep "^${field}:" \
+    | head -1 \
+    | sed "s/^${field}:[[:space:]]*//"
+}
+
+# ── 帮助 ────────────────────────────────────────────────────
+cg_help() {
+  cat <<'EOF'
+Context Garden CLI — 管理个人 AI 上下文
+
+用法:
+  cg <command> [options]
+
+命令:
+  skills                      列出所有 Skill
+  skill <name>                查看某个 Skill
+  projects                    列出所有项目
+  context <project>           查看项目上下文
+  use <skill> <project>       拼接 Skill + 项目上下文为完整 prompt
+  templates                   列出所有模板
+  template <name>             查看某个模板
+  profile                     查看个人偏好（合并 profile/ 下所有文件）
+  memory [type]               查看记忆文件 (decisions | weekly)
+  edit skill <name>           编辑某个 Skill
+  edit context <project>      编辑项目上下文
+  edit memory <type>          编辑记忆文件
+  edit profile <type>         编辑个人偏好 (about-me | preferences | writing-style)
+  sync                        同步到 GitHub (git add + commit + push)
+  init                        初始化 git 仓库（如果尚未初始化）
+  path                        显示 Context Garden 仓库路径
+  help                        显示此帮助
+
+示例:
+  cg skills
+  cg skill pitch-coach
+  cg context eventalpha
+  cg use pitch-coach eventalpha
+  cg use pitch-coach eventalpha | pbcopy    # 复制到剪贴板
+  cg edit skill pitch-coach
+  cg sync
+
+环境变量:
+  CG_EDITOR    编辑器（默认 $EDITOR 或 vim）
+EOF
+}
+
+# ── skills ──────────────────────────────────────────────────
+cg_list_skills() {
+  local skills_dir="$CG_ROOT/skills"
+  if [[ ! -d "$skills_dir" ]]; then
+    cg_error "skills 目录不存在: $skills_dir"
+    return 1
+  fi
+
+  local found=0
+  printf "${CG_BOLD}Available Skills:${CG_RESET}\n\n"
+  for skill_dir in "$skills_dir"/*/; do
+    [[ -d "$skill_dir" ]] || continue
+    local name
+    name="$(basename "$skill_dir")"
+    local skill_file="$skill_dir/SKILL.md"
+    if [[ -f "$skill_file" ]]; then
+      local desc
+      desc="$(cg_frontmatter_field "$skill_file" "description")"
+      printf "  ${CG_CYAN}%-26s${CG_RESET} %s\n" "$name" "${desc:-（无描述）}"
+      found=1
+    fi
+  done
+  if [[ $found -eq 0 ]]; then
+    cg_warn "还没有任何 Skill。用 cg edit skill <name> 创建一个。"
+  fi
+}
+
+cg_show_skill() {
+  local name="$1"
+  local skill_file="$CG_ROOT/skills/$name/SKILL.md"
+  if [[ ! -f "$skill_file" ]]; then
+    cg_error "Skill 不存在: $name"
+    cg_info "可用 Skill:"
+    cg_list_skills
+    return 1
+  fi
+  cat "$skill_file"
+}
+
+# ── projects ───────────────────────────────────────────────
+cg_list_projects() {
+  local projects_dir="$CG_ROOT/projects"
+  if [[ ! -d "$projects_dir" ]]; then
+    cg_error "projects 目录不存在"
+    return 1
+  fi
+
+  local found=0
+  printf "${CG_BOLD}Projects:${CG_RESET}\n\n"
+  for proj_dir in "$projects_dir"/*/; do
+    [[ -d "$proj_dir" ]] || continue
+    local name
+    name="$(basename "$proj_dir")"
+    local ctx_file="$proj_dir/context.md"
+    if [[ -f "$ctx_file" ]]; then
+      local status
+      status="$(cg_frontmatter_field "$ctx_file" "status")"
+      local marker=" "
+      [[ "$status" == "active" ]] && marker="${CG_GREEN}●${CG_RESET}"
+      [[ "$status" == "paused" ]] && marker="${CG_YELLOW}●${CG_RESET}"
+      [[ "$status" == "archived" ]] && marker="${CG_DIM}○${CG_RESET}"
+      printf "  %s ${CG_CYAN}%-20s${CG_RESET} %s\n" "$marker" "$name" "[$status]"
+      found=1
+    else
+      printf "    ${CG_DIM}%-20s${CG_RESET} (无 context.md)\n" "$name"
+      found=1
+    fi
+  done
+  if [[ $found -eq 0 ]]; then
+    cg_warn "还没有任何项目。用 cg edit context <name> 创建一个。"
+  fi
+}
+
+cg_show_context() {
+  local project="$1"
+  local ctx_file="$CG_ROOT/projects/$project/context.md"
+  if [[ ! -f "$ctx_file" ]]; then
+    cg_error "项目上下文不存在: $project"
+    cg_info "可用项目:"
+    cg_list_projects
+    return 1
+  fi
+  cat "$ctx_file"
+}
+
+# ── use (拼接 Skill + Context) ─────────────────────────────
+cg_use() {
+  local skill_name="$1"
+  local project_name="$2"
+  local skill_file="$CG_ROOT/skills/$skill_name/SKILL.md"
+  local ctx_file="$CG_ROOT/projects/$project_name/context.md"
+
+  local has_skill=0 has_ctx=0
+  [[ -f "$skill_file" ]] && has_skill=1
+  [[ -f "$ctx_file" ]] && has_ctx=1
+
+  if [[ $has_skill -eq 0 ]]; then
+    cg_error "Skill 不存在: $skill_name"
+    return 1
+  fi
+  if [[ $has_ctx -eq 0 ]]; then
+    cg_error "项目上下文不存在: $project_name"
+    return 1
+  fi
+
+  # 加载 profile（如果存在）
+  local profile_content=""
+  for pf in about-me.md preferences.md writing-style.md; do
+    if [[ -f "$CG_ROOT/profile/$pf" ]]; then
+      profile_content+="$(cat "$CG_ROOT/profile/$pf")"$'\n\n'
+    fi
+  done
+
+  cg_separator
+  printf "${CG_BOLD}Context Garden Prompt${CG_RESET}\n"
+  printf "${CG_DIM}Skill: %s | Project: %s | Generated: %s${CG_RESET}\n" \
+    "$skill_name" "$project_name" "$(date '+%Y-%m-%d %H:%M')"
+  cg_separator
+
+  printf '\n## 个人偏好\n\n'
+  if [[ -n "$profile_content" ]]; then
+    printf '%s' "$profile_content"
+  else
+    printf '（profile/ 目录为空，跳过）\n'
+  fi
+
+  printf '\n## Skill: %s\n\n' "$skill_name"
+  cat "$skill_file"
+
+  printf '\n## 项目上下文: %s\n\n' "$project_name"
+  cat "$ctx_file"
+
+  # 尝试加载项目的 FAQ
+  local faq_file="$CG_ROOT/projects/$project_name/faq.md"
+  if [[ -f "$faq_file" ]]; then
+    printf '\n## 项目 FAQ: %s\n\n' "$project_name"
+    cat "$faq_file"
+  fi
+
+  # 尝试加载项目的决策记录
+  local decisions_file="$CG_ROOT/projects/$project_name/decisions.md"
+  if [[ -f "$decisions_file" ]]; then
+    printf '\n## 项目决策记录: %s\n\n' "$project_name"
+    cat "$decisions_file"
+  fi
+
+  cg_separator
+  printf "${CG_DIM}复制以上内容到 ChatGPT / Claude / Cursor / Codex 即可使用。${CG_RESET}\n"
+  cg_separator
+}
+
+# ── templates ──────────────────────────────────────────────
+cg_list_templates() {
+  local tpl_dir="$CG_ROOT/templates"
+  if [[ ! -d "$tpl_dir" ]]; then
+    cg_error "templates 目录不存在"
+    return 1
+  fi
+
+  local found=0
+  printf "${CG_BOLD}Available Templates:${CG_RESET}\n\n"
+  for tpl_file in "$tpl_dir"/*.md; do
+    [[ -f "$tpl_file" ]] || continue
+    local name
+    name="$(basename "$tpl_file" .md)"
+    local purpose
+    purpose="$(cg_frontmatter_field "$tpl_file" "purpose")"
+    printf "  ${CG_CYAN}%-22s${CG_RESET} %s\n" "$name" "${purpose:-}"
+    found=1
+  done
+  if [[ $found -eq 0 ]]; then
+    cg_warn "还没有任何模板。"
+  fi
+}
+
+cg_show_template() {
+  local name="$1"
+  local tpl_file="$CG_ROOT/templates/$name.md"
+  if [[ ! -f "$tpl_file" ]]; then
+    cg_error "模板不存在: $name"
+    cg_info "可用模板:"
+    cg_list_templates
+    return 1
+  fi
+  cat "$tpl_file"
+}
+
+# ── profile ─────────────────────────────────────────────────
+cg_show_profile() {
+  local profile_dir="$CG_ROOT/profile"
+  printf "${CG_BOLD}Personal Profile${CG_RESET}\n\n"
+  for pf in about-me.md preferences.md writing-style.md; do
+    local file="$profile_dir/$pf"
+    if [[ -f "$file" ]]; then
+      cat "$file"
+      printf '\n'
+    else
+      cg_warn "缺少: profile/$pf"
+    fi
+  done
+}
+
+# ── memory ──────────────────────────────────────────────────
+cg_show_memory() {
+  local mem_type="${1:-}"
+  local mem_dir="$CG_ROOT/memory"
+  if [[ -n "$mem_type" ]]; then
+    local file
+    case "$mem_type" in
+      decisions|important-decisions) file="$mem_dir/important-decisions.md" ;;
+      weekly|weekly-summary)          file="$mem_dir/weekly-summary.md" ;;
+      *)
+        cg_error "未知记忆类型: $mem_type"
+        cg_info "可用类型: decisions, weekly"
+        return 1
+        ;;
+    esac
+    if [[ ! -f "$file" ]]; then
+      cg_error "记忆文件不存在: $file"
+      return 1
+    fi
+    cat "$file"
+  else
+    printf "${CG_BOLD}Memory Files:${CG_RESET}\n\n"
+    for mem_file in "$mem_dir"/*.md; do
+      [[ -f "$mem_file" ]] || continue
+      local name
+      name="$(basename "$mem_file" .md)"
+      printf "  ${CG_CYAN}%-22s${CG_RESET} %s\n" "$name" "$mem_file"
+    done
+  fi
+}
+
+# ── edit ────────────────────────────────────────────────────
+cg_edit() {
+  local editor="${CG_EDITOR:-${EDITOR:-vim}}"
+  local type="$1"
+  local name="${2:-}"
+
+  local file=""
+  case "$type" in
+    skill)
+      [[ -z "$name" ]] && { cg_error "用法: cg edit skill <name>"; return 1; }
+      file="$CG_ROOT/skills/$name/SKILL.md"
+      # 如果不存在，创建目录和模板
+      if [[ ! -f "$file" ]]; then
+        cg_info "创建新 Skill: $name"
+        mkdir -p "$CG_ROOT/skills/$name"
+        cat > "$file" <<EOF
+---
+name: $name
+description: 什么时候用这个 Skill
+version: 1.0
+---
+
+# ${name} Skill
+
+## 目标
+
+（这个 Skill 解决什么问题）
+
+## 适用场景
+
+- 
+
+## 输出原则
+
+1. 
+
+## 输出结构
+
+\`\`\`markdown
+（输出应该长什么样）
+\`\`\`
+
+## 常见追问
+
+- 
+EOF
+        cg_ok "已创建: $file"
+      fi
+      ;;
+    context)
+      [[ -z "$name" ]] && { cg_error "用法: cg edit context <project>"; return 1; }
+      file="$CG_ROOT/projects/$name/context.md"
+      if [[ ! -f "$file" ]]; then
+        cg_info "创建新项目: $name"
+        mkdir -p "$CG_ROOT/projects/$name"
+        cat > "$file" <<EOF
+---
+project: $name
+status: active
+updated: $(date '+%Y-%m-%d')
+---
+
+# ${name} - 项目上下文
+
+## 一句话定位
+
+（你的项目是什么）
+
+## 核心痛点
+
+- 
+
+## 当前产品想法
+
+- 
+
+## 已知风险
+
+- 
+
+## 下一步计划
+
+- [ ] 
+
+## 已确定的决策
+
+- 
+EOF
+        cg_ok "已创建: $file"
+      fi
+      ;;
+    memory)
+      local mem_type="${name:-}"
+      [[ -z "$mem_type" ]] && { cg_error "用法: cg edit memory <decisions|weekly>"; return 1; }
+      case "$mem_type" in
+        decisions|important-decisions) file="$CG_ROOT/memory/important-decisions.md" ;;
+        weekly|weekly-summary)          file="$CG_ROOT/memory/weekly-summary.md" ;;
+        *)
+          cg_error "未知记忆类型: $mem_type"
+          cg_info "可用: decisions, weekly"
+          return 1
+          ;;
+      esac
+      [[ ! -f "$file" ]] && { cg_error "文件不存在: $file"; return 1; }
+      ;;
+    profile)
+      local prof_type="${name:-}"
+      [[ -z "$prof_type" ]] && { cg_error "用法: cg edit profile <about-me|preferences|writing-style>"; return 1; }
+      file="$CG_ROOT/profile/$prof_type.md"
+      [[ ! -f "$file" ]] && { cg_error "文件不存在: $file"; return 1; }
+      ;;
+    *)
+      cg_error "未知编辑类型: $type"
+      cg_info "可用: skill, context, memory, profile"
+      return 1
+      ;;
+  esac
+
+  cg_info "用 $editor 打开: $file"
+  "$editor" "$file"
+}
+
+# ── sync ────────────────────────────────────────────────────
+cg_sync() {
+  cd "$CG_ROOT"
+
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    cg_error "不是 git 仓库。请先运行: cg init"
+    return 1
+  fi
+
+  # 检查是否有变更
+  if git diff --quiet HEAD 2>/dev/null && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
+    cg_ok "没有变更，已是最新。"
+    return 0
+  fi
+
+  # 暂存所有变更
+  git add -A
+
+  # 生成提交信息
+  local changes
+  changes="$(git status --short | head -10)"
+  local change_count
+  change_count="$(git status --short | wc -l | tr -d ' ')"
+
+  local msg="[cg sync] 更新 ${change_count} 个文件
+
+Changed files:
+${changes}"
+
+  # 提交
+  git commit -m "$msg"
+  cg_ok "已提交 ${change_count} 个文件变更。"
+
+  # 推送
+  if git remote get-url origin &>/dev/null; then
+    git push origin HEAD 2>&1 | while read -r line; do
+      printf "  %s\n" "$line"
+    done
+    cg_ok "已推送到远程仓库。"
+  else
+    cg_warn "没有配置远程仓库 (origin)。跳过推送。"
+    cg_info "用以下命令添加远程仓库:"
+    printf "  git remote add origin git@github.com:<user>/context-garden.git\n"
+  fi
+}
+
+# ── init ───────────────────────────────────────────────────
+cg_init() {
+  cd "$CG_ROOT"
+  if git rev-parse --is-inside-work-tree &>/dev/null; then
+    cg_ok "已经是 git 仓库: $(git rev-parse --show-toplevel)"
+    return 0
+  fi
+
+  cg_info "初始化 git 仓库..."
+  git init
+  git add -A
+  git commit -m "Initial commit: Context Garden V1+V2
+
+- profile/: 个人背景和偏好
+- projects/: 长期项目上下文 (eventalpha, aliyun-solutions, video-prompting)
+- skills/: 可复用 AI 工作流 (pitch-coach, finance-hackathon, cloud-solution-architect, video-prompt-writer)
+- templates/: 常用输出模板
+- memory/: 跨项目重要结论
+- bin/cg: 命令行工具
+- docs/: 使用说明"
+
+  cg_ok "Git 仓库已初始化并完成首次提交。"
+}
+
+# ── path ───────────────────────────────────────────────────
+cg_show_path() {
+  printf "%s\n" "$CG_ROOT"
+}
+
+# ── 主入口 ─────────────────────────────────────────────────
+main() {
+  if [[ $# -eq 0 ]]; then
+    cg_help
+    return 0
+  fi
+
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    skills|s)
+      cg_list_skills
+      ;;
+    skill)
+      [[ $# -lt 1 ]] && { cg_error "用法: cg skill <name>"; cg_help; return 1; }
+      cg_show_skill "$1"
+      ;;
+    projects|p)
+      cg_list_projects
+      ;;
+    context|ctx)
+      [[ $# -lt 1 ]] && { cg_error "用法: cg context <project>"; cg_help; return 1; }
+      cg_show_context "$1"
+      ;;
+    use)
+      [[ $# -lt 2 ]] && { cg_error "用法: cg use <skill> <project>"; cg_help; return 1; }
+      cg_use "$1" "$2"
+      ;;
+    templates|tpl)
+      cg_list_templates
+      ;;
+    template)
+      [[ $# -lt 1 ]] && { cg_error "用法: cg template <name>"; cg_help; return 1; }
+      cg_show_template "$1"
+      ;;
+    profile)
+      cg_show_profile
+      ;;
+    memory|mem)
+      cg_show_memory "${1:-}"
+      ;;
+    edit)
+      [[ $# -lt 1 ]] && { cg_error "用法: cg edit <skill|context|memory|profile> <name>"; cg_help; return 1; }
+      cg_edit "$1" "${2:-}"
+      ;;
+    sync)
+      cg_sync
+      ;;
+    init)
+      cg_init
+      ;;
+    path)
+      cg_show_path
+      ;;
+    help|--help|-h)
+      cg_help
+      ;;
+    *)
+      cg_error "未知命令: $cmd"
+      echo
+      cg_help
+      return 1
+      ;;
+  esac
+}
+
+main "$@"
