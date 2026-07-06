@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  cg — Context Garden CLI
+#  cg — Context Garden CLI  (Enhanced UI Edition)
 #  管理个人 AI 上下文：Skill、项目上下文、模板、记忆
 # ============================================================================
 set -euo pipefail
 
 # ── 路径配置 ────────────────────────────────────────────────
-# 自动检测仓库根目录（脚本所在目录的上一级）
 CG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 export CG_ROOT
 
 # ── 颜色 ────────────────────────────────────────────────────
@@ -19,25 +17,91 @@ if [[ -t 1 ]]; then
   CG_RED='\033[31m'
   CG_BOLD='\033[1m'
   CG_DIM='\033[2m'
+  CG_MAGENTA='\033[35m'
+  CG_BLUE='\033[34m'
+  CG_WHITE='\033[97m'
   CG_RESET='\033[0m'
+  # 背景
+  CG_BG_CYAN='\033[46m'
+  CG_BG_GREEN='\033[42m'
+  CG_BG_DIM='\033[48;5;236m'
 else
-  CG_CYAN=''
-  CG_GREEN=''
-  CG_YELLOW=''
-  CG_RED=''
-  CG_BOLD=''
-  CG_DIM=''
-  CG_RESET=''
+  CG_CYAN='' CG_GREEN='' CG_YELLOW='' CG_RED=''
+  CG_BOLD='' CG_DIM='' CG_MAGENTA='' CG_BLUE=''
+  CG_WHITE='' CG_RESET='' CG_BG_CYAN='' CG_BG_GREEN='' CG_BG_DIM=''
 fi
 
-# ── 工具函数 ────────────────────────────────────────────────
-cg_info()  { printf "${CG_CYAN}${CG_BOLD}ℹ${CG_RESET}  %s\n" "$*"; }
-cg_ok()    { printf "${CG_GREEN}${CG_BOLD}✓${CG_RESET}  %s\n" "$*"; }
-cg_warn()  { printf "${CG_YELLOW}${CG_BOLD}⚠${CG_RESET}  %s\n" "$*"; }
-cg_error() { printf "${CG_RED}${CG_BOLD}✗${CG_RESET}  %s\n" "$*" >&2; }
+# ── 图标 ────────────────────────────────────────────────────
+CG_ICON_SKILL="✦"
+CG_ICON_PROJECT="◆"
+CG_ICON_TEMPLATE="▸"
+CG_ICON_MEMORY="◉"
+CG_ICON_PROFILE="●"
+CG_ICON_SYNC="↑"
+CG_ICON_PULL="↓"
+CG_ICON_EDIT="✎"
+CG_ICON_DELETE="✕"
+CG_ICON_HELP="?"
 
+# ── 工具函数 ────────────────────────────────────────────────
+cg_info()  { printf "${CG_CYAN}  ℹ${CG_RESET}  %s\n" "$*"; }
+cg_ok()    { printf "${CG_GREEN}  ✓${CG_RESET}  %s\n" "$*"; }
+cg_warn()  { printf "${CG_YELLOW}  ⚠${CG_RESET}  %s\n" "$*"; }
+cg_error() { printf "${CG_RED}  ✗${CG_RESET}  %s\n" "$*" >&2; }
+
+# 分隔线
 cg_separator() {
-  printf "${CG_DIM}─────────────────────────────────────────────────${CG_RESET}\n"
+  local width="${1:-50}"
+  printf "${CG_DIM}"
+  printf '─%.0s' $(seq 1 "$width")
+  printf "${CG_RESET}\n"
+}
+
+# 双线分隔
+cg_double_sep() {
+  local width="${1:-50}"
+  printf "${CG_DIM}"
+  printf '═%.0s' $(seq 1 "$width")
+  printf "${CG_RESET}\n"
+}
+
+# 横幅
+cg_banner() {
+  printf "${CG_GREEN}"
+  cat <<'BANNER'
+   ╔═══════════════════════════════════════════════╗
+   ║                                               ║
+   ║   🌿  C O N T E X T   G A R D E N            ║
+   ║                                               ║
+   ║   你的个人 AI 上下文花园                       ║
+   ║                                               ║
+   ╚═══════════════════════════════════════════════╝
+BANNER
+  printf "${CG_RESET}"
+}
+
+# 横幅（紧凑版）
+cg_banner_small() {
+  printf "${CG_GREEN}${CG_BOLD}"
+  printf "  🌿 Context Garden"
+  printf "${CG_RESET}${CG_DIM}"
+  printf "  — 你的个人 AI 上下文花园\n"
+  printf "${CG_RESET}"
+}
+
+# 章节标题
+cg_header() {
+  local title="$1"
+  local icon="${2:-}"
+  printf "\n"
+  if [[ -n "$icon" ]]; then
+    printf "${CG_BOLD}${CG_GREEN}  %s %s${CG_RESET}\n" "$icon" "$title"
+  else
+    printf "${CG_BOLD}${CG_GREEN}  %s${CG_RESET}\n" "$title"
+  fi
+  printf "${CG_DIM}  "
+  printf '─%.0s' $(seq 1 48)
+  printf "${CG_RESET}\n\n"
 }
 
 # 从 frontmatter 提取字段值
@@ -49,51 +113,67 @@ cg_frontmatter_field() {
     | sed "s/^${field}:[[:space:]]*//"
 }
 
+# 获取终端宽度
+cg_term_width() {
+  local w
+  w=$(tput cols 2>/dev/null || echo 80)
+  [[ $w -lt 40 ]] && w=40
+  [[ $w -gt 100 ]] && w=100
+  echo "$w"
+}
+
 # ── 帮助 ────────────────────────────────────────────────────
 cg_help() {
-  cat <<'EOF'
-Context Garden CLI — 管理个人 AI 上下文
+  cg_banner
+  printf "\n"
+  printf "${CG_DIM}  用法:${CG_RESET} ${CG_BOLD}cg${CG_RESET} ${CG_CYAN}<command>${CG_RESET} ${CG_DIM}[options]${CG_RESET}\n\n"
 
-用法:
-  cg <command> [options]
+  # ── 查看类 ──
+  printf "${CG_BOLD}${CG_MAGENTA}  📖 查看内容${CG_RESET}\n"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  printf "  ${CG_CYAN}skills${CG_RESET}                     列出所有 Skill\n"
+  printf "  ${CG_CYAN}skill${CG_RESET} ${CG_DIM}<name>${CG_RESET}              查看某个 Skill\n"
+  printf "  ${CG_CYAN}skill${CG_RESET} ${CG_DIM}<name>${CG_RESET} ${CG_DIM}<file>${CG_RESET}        查看 Skill 中的特定文件\n"
+  printf "  ${CG_CYAN}skill${CG_RESET} ${CG_DIM}<name>${CG_RESET} --all       查看 Skill 目录下所有文件\n"
+  printf "  ${CG_CYAN}projects${CG_RESET}                   列出所有项目\n"
+  printf "  ${CG_CYAN}context${CG_RESET} ${CG_DIM}<project>${CG_RESET}          查看项目上下文\n"
+  printf "  ${CG_CYAN}templates${CG_RESET}                  列出所有模板\n"
+  printf "  ${CG_CYAN}template${CG_RESET} ${CG_DIM}<name>${CG_RESET}           查看某个模板\n"
+  printf "  ${CG_CYAN}profile${CG_RESET}                    查看个人偏好\n"
+  printf "  ${CG_CYAN}memory${CG_RESET} ${CG_DIM}[type]${CG_RESET}              查看记忆文件\n"
+  printf "  ${CG_CYAN}status${CG_RESET}                     查看花园概览仪表盘\n\n"
 
-命令:
-  skills                      列出所有 Skill
-  skill <name>                查看某个 Skill (SKILL.md)
-  skill <name> <file>         查看 Skill 目录下的某个文件
-  skill <name> --all          查看 Skill 目录下所有文件
-  projects                    列出所有项目
-  context <project>           查看项目上下文
-  use <skill> <project>       拼接 Skill + 项目上下文为完整 prompt
-  templates                   列出所有模板
-  template <name>             查看某个模板
-  profile                     查看个人偏好（合并 profile/ 下所有文件）
-  memory [type]               查看记忆文件 (decisions | weekly)
-  edit skill <name>           编辑某个 Skill
-  edit context <project>      编辑项目上下文
-  edit memory <type>          编辑记忆文件
-  edit profile <type>         编辑个人偏好 (about-me | preferences | writing-style)
-  delete skill <name>         删除某个 Skill（含目录下所有文件）
-  delete context <name>       删除某个项目（含目录下所有文件）
-  sync                        同步到 GitHub (git add + commit + push)
-  pull                        从 GitHub 拉取最新更新 (git pull)
-  init                        初始化 git 仓库（如果尚未初始化）
-  path                        显示 Context Garden 仓库路径
-  help                        显示此帮助
+  # ── 生成类 ──
+  printf "${CG_BOLD}${CG_MAGENTA}  ⚡ 生成与使用${CG_RESET}\n"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  printf "  ${CG_CYAN}use${CG_RESET} ${CG_DIM}<skill> <project>${CG_RESET}     拼接 Skill + 项目上下文为完整 prompt\n"
+  printf "  ${CG_DIM}  └─ ${CG_CYAN}cg use pitch-coach eventalpha${CG_RESET} ${CG_DIM}# 示例${CG_RESET}\n\n"
 
-示例:
-  cg skills
-  cg skill pitch-coach
-  cg context eventalpha
-  cg use pitch-coach eventalpha
-  cg use pitch-coach eventalpha | pbcopy    # 复制到剪贴板
-  cg edit skill pitch-coach
-  cg sync
-  cg pull
+  # ── 编辑类 ──
+  printf "${CG_BOLD}${CG_MAGENTA}  ✎ 编辑与管理${CG_RESET}\n"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  printf "  ${CG_CYAN}edit skill${CG_RESET} ${CG_DIM}<name>${CG_RESET}         编辑/创建 Skill\n"
+  printf "  ${CG_CYAN}edit context${CG_RESET} ${CG_DIM}<project>${CG_RESET}    编辑/创建项目上下文\n"
+  printf "  ${CG_CYAN}edit memory${CG_RESET} ${CG_DIM}<type>${CG_RESET}        编辑记忆文件\n"
+  printf "  ${CG_CYAN}edit profile${CG_RESET} ${CG_DIM}<type>${CG_RESET}       编辑个人偏好\n"
+  printf "  ${CG_CYAN}delete skill${CG_RESET} ${CG_DIM}<name>${CG_RESET}       删除 Skill\n"
+  printf "  ${CG_CYAN}delete context${CG_RESET} ${CG_DIM}<name>${CG_RESET}     删除项目\n\n"
 
-环境变量:
-  CG_EDITOR    编辑器（默认 $EDITOR 或 vim）
-EOF
+  # ── 同步类 ──
+  printf "${CG_BOLD}${CG_MAGENTA}  ↕ 同步${CG_RESET}\n"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  printf "  ${CG_CYAN}sync${CG_RESET}                       推送本地变更到 GitHub\n"
+  printf "  ${CG_CYAN}pull${CG_RESET}                       从 GitHub 拉取最新更新\n"
+  printf "  ${CG_CYAN}init${CG_RESET}                       初始化 git 仓库\n"
+  printf "  ${CG_CYAN}path${CG_RESET}                       显示仓库路径\n\n"
+
+  # ── 提示 ──
+  printf "${CG_BOLD}${CG_YELLOW}  💡 提示${CG_RESET}\n"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  printf "  ${CG_DIM}•${CG_RESET}  ${CG_CYAN}cg use${CG_RESET} 输出可直接复制给 ChatGPT / Claude / Cursor\n"
+  printf "  ${CG_DIM}•${CG_RESET}  Skill 目录可包含多个 ${CG_CYAN}.md${CG_RESET} 文件\n"
+  printf "  ${CG_DIM}•${CG_RESET}  ${CG_CYAN}CG_EDITOR${CG_RESET} 环境变量可指定编辑器\n"
+  printf "  ${CG_DIM}•${CG_RESET}  无参数运行 ${CG_CYAN}cg${CG_RESET} 显示此帮助\n\n"
 }
 
 # ── skills ──────────────────────────────────────────────────
@@ -105,7 +185,10 @@ cg_list_skills() {
   fi
 
   local found=0
-  printf "${CG_BOLD}Available Skills:${CG_RESET}\n\n"
+  local count=0
+
+  cg_header "Skills" "$CG_ICON_SKILL"
+
   for skill_dir in "$skills_dir"/*/; do
     [[ -d "$skill_dir" ]] || continue
     local name
@@ -114,19 +197,34 @@ cg_list_skills() {
     if [[ -f "$skill_file" ]]; then
       local desc
       desc="$(cg_frontmatter_field "$skill_file" "description")"
-      # 统计目录下文件数
       local file_count
       file_count=$(find "$skill_dir" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')
-      local file_info=""
-      if [[ $file_count -gt 1 ]]; then
-        file_info="${CG_DIM}(${file_count} files)${CG_RESET}"
+
+      # 卡片式展示
+      printf "  ${CG_BOLD}${CG_CYAN}✦ %s${CG_RESET}\n" "$name"
+      if [[ -n "$desc" ]]; then
+        # 截断过长描述
+        if [[ ${#desc} -gt 60 ]]; then
+          desc="${desc:0:57}..."
+        fi
+        printf "    ${CG_DIM}%s${CG_RESET}\n" "$desc"
+      else
+        printf "    ${CG_DIM}（无描述）${CG_RESET}\n"
       fi
-      printf "  ${CG_CYAN}%-26s${CG_RESET} %-40s %s\n" "$name" "${desc:-（无描述）}" "$file_info"
+      if [[ $file_count -gt 1 ]]; then
+        printf "    ${CG_DIM}📁 ${file_count} 个文件${CG_RESET}\n"
+      fi
+      printf "\n"
       found=1
+      count=$((count + 1))
     fi
   done
+
   if [[ $found -eq 0 ]]; then
-    cg_warn "还没有任何 Skill。用 cg edit skill <name> 创建一个。"
+    printf "  ${CG_DIM}还没有任何 Skill${CG_RESET}\n"
+    printf "  ${CG_DIM}用 ${CG_CYAN}cg edit skill <name>${CG_DIM} 创建一个${CG_RESET}\n\n"
+  else
+    printf "  ${CG_DIM}共 ${CG_BOLD}%d${CG_RESET}${CG_DIM} 个 Skill${CG_RESET}\n\n" "$count"
   fi
 }
 
@@ -143,18 +241,17 @@ cg_show_skill() {
     return 1
   fi
 
-  # 模式: --all 显示所有文件, 指定文件名显示该文件, 默认显示 SKILL.md + 列出其他文件
   if [[ "$mode" == "--all" ]]; then
-    # 显示目录下所有 .md 文件
     local first=1
     for f in "$skill_dir"/*.md; do
       [[ -f "$f" ]] || continue
       if [[ $first -eq 0 ]]; then
         printf '\n'
-        cg_separator
+        cg_separator 48
         printf '\n'
       fi
-      printf "${CG_BOLD}### %s${CG_RESET}\n\n" "$(basename "$f")"
+      printf "${CG_BOLD}${CG_CYAN}  ┌─ %s ─${CG_RESET}\n" "$(basename "$f")"
+      printf "\n"
       cat "$f"
       first=0
     done
@@ -162,34 +259,30 @@ cg_show_skill() {
       cg_warn "Skill 目录下没有 .md 文件: $skill_dir"
     fi
   elif [[ -n "$mode" ]]; then
-    # 显示指定文件
     local target_file="$skill_dir/$mode"
     if [[ ! -f "$target_file" ]]; then
-      # 尝试加 .md 后缀
       target_file="$skill_dir/$mode.md"
     fi
     if [[ ! -f "$target_file" ]]; then
       cg_error "文件不存在: $mode"
       cg_info "Skill \"$name\" 目录下的文件:"
       find "$skill_dir" -maxdepth 1 -type f -name '*.md' -exec basename {} \; | sort | while read -r f; do
-        printf "  %s\n" "$f"
+        printf "    ${CG_CYAN}%s${CG_RESET}\n" "$f"
       done
       return 1
     fi
     cat "$target_file"
   else
-    # 默认: 显示 SKILL.md
     if [[ ! -f "$skill_file" ]]; then
       cg_error "SKILL.md 不存在: $skill_file"
       cg_info "Skill \"$name\" 目录下的文件:"
       find "$skill_dir" -maxdepth 1 -type f -name '*.md' -exec basename {} \; | sort | while read -r f; do
-        printf "  %s\n" "$f"
+        printf "    ${CG_CYAN}%s${CG_RESET}\n" "$f"
       done
       return 1
     fi
     cat "$skill_file"
 
-    # 列出其他文件
     local other_files=()
     for f in "$skill_dir"/*.md; do
       [[ -f "$f" ]] || continue
@@ -200,13 +293,13 @@ cg_show_skill() {
 
     if [[ ${#other_files[@]} -gt 0 ]]; then
       printf '\n'
-      cg_separator
-      printf "${CG_DIM}该 Skill 还有 ${#other_files[@]} 个文件，用以下命令查看:${CG_RESET}\n"
+      cg_separator 48
+      printf "${CG_DIM}  📁 该 Skill 还有 ${#other_files[@]} 个文件:${CG_RESET}\n\n"
       for f in "${other_files[@]}"; do
-        printf "  ${CG_CYAN}cg skill %s %s${CG_RESET}\n" "$name" "$f"
+        printf "    ${CG_CYAN}cg skill %s %s${CG_RESET}\n" "$name" "$f"
       done
-      printf "  ${CG_CYAN}cg skill %s --all${CG_RESET}  ${CG_DIM}# 查看全部${CG_RESET}\n" "$name"
-      cg_separator
+      printf "    ${CG_CYAN}cg skill %s --all${CG_RESET} ${CG_DIM}# 查看全部${CG_RESET}\n" "$name"
+      printf '\n'
     fi
   fi
 }
@@ -220,7 +313,10 @@ cg_list_projects() {
   fi
 
   local found=0
-  printf "${CG_BOLD}Projects:${CG_RESET}\n\n"
+  local count=0
+
+  cg_header "Projects" "$CG_ICON_PROJECT"
+
   for proj_dir in "$projects_dir"/*/; do
     [[ -d "$proj_dir" ]] || continue
     local name
@@ -229,19 +325,37 @@ cg_list_projects() {
     if [[ -f "$ctx_file" ]]; then
       local status
       status="$(cg_frontmatter_field "$ctx_file" "status")"
-      local marker=" "
-      [[ "$status" == "active" ]] && marker="${CG_GREEN}●${CG_RESET}"
-      [[ "$status" == "paused" ]] && marker="${CG_YELLOW}●${CG_RESET}"
-      [[ "$status" == "archived" ]] && marker="${CG_DIM}○${CG_RESET}"
-      printf "  %s ${CG_CYAN}%-20s${CG_RESET} %s\n" "$marker" "$name" "[$status]"
+      local marker="○"
+      local marker_color="$CG_DIM"
+      [[ "$status" == "active" ]] && marker="●" && marker_color="$CG_GREEN"
+      [[ "$status" == "paused" ]] && marker="●" && marker_color="$CG_YELLOW"
+      [[ "$status" == "archived" ]] && marker="○" && marker_color="$CG_DIM"
+
+      printf "  ${marker_color}%s${CG_RESET} ${CG_BOLD}${CG_CYAN}%-22s${CG_RESET}" "$marker" "$name"
+      if [[ -n "$status" ]]; then
+        printf " ${CG_DIM}[%s]${CG_RESET}" "$status"
+      fi
+      printf "\n"
+
+      # 显示文件数
+      local fcount
+      fcount=$(find "$proj_dir" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')
+      printf "    ${CG_DIM}📁 ${fcount} 个文件${CG_RESET}\n\n"
+
       found=1
+      count=$((count + 1))
     else
-      printf "    ${CG_DIM}%-20s${CG_RESET} (无 context.md)\n" "$name"
+      printf "  ${CG_DIM}○ %-22s (无 context.md)${CG_RESET}\n\n" "$name"
       found=1
+      count=$((count + 1))
     fi
   done
+
   if [[ $found -eq 0 ]]; then
-    cg_warn "还没有任何项目。用 cg edit context <name> 创建一个。"
+    printf "  ${CG_DIM}还没有任何项目${CG_RESET}\n"
+    printf "  ${CG_DIM}用 ${CG_CYAN}cg edit context <name>${CG_DIM} 创建一个${CG_RESET}\n\n"
+  else
+    printf "  ${CG_DIM}共 ${CG_BOLD}%d${CG_RESET}${CG_DIM} 个项目${CG_RESET}\n\n" "$count"
   fi
 }
 
@@ -278,7 +392,7 @@ cg_use() {
     return 1
   fi
 
-  # 加载 profile（如果存在）
+  # 加载 profile
   local profile_content=""
   for pf in about-me.md preferences.md writing-style.md; do
     if [[ -f "$CG_ROOT/profile/$pf" ]]; then
@@ -286,11 +400,12 @@ cg_use() {
     fi
   done
 
-  cg_separator
-  printf "${CG_BOLD}Context Garden Prompt${CG_RESET}\n"
-  printf "${CG_DIM}Skill: %s | Project: %s | Generated: %s${CG_RESET}\n" \
+  # 头部
+  cg_double_sep 52
+  printf "${CG_BOLD}${CG_GREEN}  🌿  Context Garden Prompt${CG_RESET}\n"
+  printf "${CG_DIM}  Skill: %s  │  Project: %s  │  %s${CG_RESET}\n" \
     "$skill_name" "$project_name" "$(date '+%Y-%m-%d %H:%M')"
-  cg_separator
+  cg_double_sep 52
 
   printf '\n## 个人偏好\n\n'
   if [[ -n "$profile_content" ]]; then
@@ -300,11 +415,9 @@ cg_use() {
   fi
 
   printf '\n## Skill: %s\n\n' "$skill_name"
-  # 先输出 SKILL.md（如果存在）
   if [[ -f "$skill_file" ]]; then
     cat "$skill_file"
   fi
-  # 再输出 Skill 目录下其他 .md 文件
   for f in "$skill_dir"/*.md; do
     [[ -f "$f" ]] || continue
     local fname
@@ -317,23 +430,22 @@ cg_use() {
   printf '\n## 项目上下文: %s\n\n' "$project_name"
   cat "$ctx_file"
 
-  # 尝试加载项目的 FAQ
   local faq_file="$CG_ROOT/projects/$project_name/faq.md"
   if [[ -f "$faq_file" ]]; then
     printf '\n## 项目 FAQ: %s\n\n' "$project_name"
     cat "$faq_file"
   fi
 
-  # 尝试加载项目的决策记录
   local decisions_file="$CG_ROOT/projects/$project_name/decisions.md"
   if [[ -f "$decisions_file" ]]; then
     printf '\n## 项目决策记录: %s\n\n' "$project_name"
     cat "$decisions_file"
   fi
 
-  cg_separator
-  printf "${CG_DIM}复制以上内容到 ChatGPT / Claude / Cursor / Codex 即可使用。${CG_RESET}\n"
-  cg_separator
+  printf '\n'
+  cg_double_sep 52
+  printf "${CG_DIM}  ✓ 复制以上内容到 ChatGPT / Claude / Cursor / Codex 即可使用${CG_RESET}\n"
+  cg_double_sep 52
 }
 
 # ── templates ──────────────────────────────────────────────
@@ -345,18 +457,33 @@ cg_list_templates() {
   fi
 
   local found=0
-  printf "${CG_BOLD}Available Templates:${CG_RESET}\n\n"
+  local count=0
+
+  cg_header "Templates" "$CG_ICON_TEMPLATE"
+
   for tpl_file in "$tpl_dir"/*.md; do
     [[ -f "$tpl_file" ]] || continue
     local name
     name="$(basename "$tpl_file" .md)"
     local purpose
     purpose="$(cg_frontmatter_field "$tpl_file" "purpose")"
-    printf "  ${CG_CYAN}%-22s${CG_RESET} %s\n" "$name" "${purpose:-}"
+
+    printf "  ${CG_CYAN}▸ %-22s${CG_RESET}" "$name"
+    if [[ -n "$purpose" ]]; then
+      if [[ ${#purpose} -gt 50 ]]; then
+        purpose="${purpose:0:47}..."
+      fi
+      printf " ${CG_DIM}%s${CG_RESET}" "$purpose"
+    fi
+    printf "\n"
     found=1
+    count=$((count + 1))
   done
+
   if [[ $found -eq 0 ]]; then
-    cg_warn "还没有任何模板。"
+    printf "  ${CG_DIM}还没有任何模板${CG_RESET}\n\n"
+  else
+    printf "\n  ${CG_DIM}共 ${CG_BOLD}%d${CG_RESET}${CG_DIM} 个模板${CG_RESET}\n\n" "$count"
   fi
 }
 
@@ -375,7 +502,9 @@ cg_show_template() {
 # ── profile ─────────────────────────────────────────────────
 cg_show_profile() {
   local profile_dir="$CG_ROOT/profile"
-  printf "${CG_BOLD}Personal Profile${CG_RESET}\n\n"
+
+  cg_header "Personal Profile" "$CG_ICON_PROFILE"
+
   for pf in about-me.md preferences.md writing-style.md; do
     local file="$profile_dir/$pf"
     if [[ -f "$file" ]]; then
@@ -408,14 +537,84 @@ cg_show_memory() {
     fi
     cat "$file"
   else
-    printf "${CG_BOLD}Memory Files:${CG_RESET}\n\n"
+    cg_header "Memory Files" "$CG_ICON_MEMORY"
     for mem_file in "$mem_dir"/*.md; do
       [[ -f "$mem_file" ]] || continue
       local name
       name="$(basename "$mem_file" .md)"
-      printf "  ${CG_CYAN}%-22s${CG_RESET} %s\n" "$name" "$mem_file"
+      printf "  ${CG_CYAN}◉ %-22s${CG_RESET} ${CG_DIM}%s${CG_RESET}\n" "$name" "$mem_file"
     done
+    printf '\n'
   fi
+}
+
+# ── status (仪表盘) ─────────────────────────────────────────
+cg_status() {
+  cg_banner_small
+  printf "\n"
+
+  local skills_count=0 projects_count=0 templates_count=0 memory_count=0
+  local profile_count=0
+
+  [[ -d "$CG_ROOT/skills" ]] && skills_count=$(find "$CG_ROOT/skills" -name 'SKILL.md' | wc -l | tr -d ' ')
+  [[ -d "$CG_ROOT/projects" ]] && projects_count=$(find "$CG_ROOT/projects" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+  [[ -d "$CG_ROOT/templates" ]] && templates_count=$(find "$CG_ROOT/templates" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+  [[ -d "$CG_ROOT/memory" ]] && memory_count=$(find "$CG_ROOT/memory" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+  [[ -d "$CG_ROOT/profile" ]] && profile_count=$(find "$CG_ROOT/profile" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+
+  # 概览卡片
+  printf "  ${CG_DIM}┌─────────────┬─────────────┬─────────────┬─────────────┐${CG_RESET}\n"
+  printf "  ${CG_DIM}│${CG_RESET} ${CG_BOLD}${CG_CYAN}✦ Skills${CG_RESET}    ${CG_DIM}│${CG_RESET} ${CG_BOLD}${CG_CYAN}◆ Projects${CG_RESET} ${CG_DIM}│${CG_RESET} ${CG_BOLD}${CG_CYAN}▸ Templates${CG_RESET}${CG_DIM}│${CG_RESET} ${CG_BOLD}${CG_CYAN}◉ Memory${CG_RESET}    ${CG_DIM}│${CG_RESET}\n"
+  printf "  ${CG_DIM}│${CG_RESET} ${CG_BOLD}%-8s${CG_RESET}    ${CG_DIM}│${CG_RESET} ${CG_BOLD}%-8s${CG_RESET}    ${CG_DIM}│${CG_RESET} ${CG_BOLD}%-8s${CG_RESET}    ${CG_DIM}│${CG_RESET} ${CG_BOLD}%-8s${CG_RESET}    ${CG_DIM}│${CG_RESET}\n" \
+    "$skills_count" "$projects_count" "$templates_count" "$memory_count"
+  printf "  ${CG_DIM}└─────────────┴─────────────┴─────────────┴─────────────┘${CG_RESET}\n"
+
+  # Git 状态
+  printf "\n"
+  if cd "$CG_ROOT" 2>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null; then
+    local branch
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+    local dirty=0
+    git diff --quiet HEAD 2>/dev/null || dirty=1
+    [[ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]] && dirty=1
+    local remote_status="已连接"
+    git remote get-url origin &>/dev/null || remote_status="未配置远程"
+
+    printf "  ${CG_BOLD}Git 状态${CG_RESET}\n"
+    printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+    printf "  ${CG_DIM}分支:${CG_RESET} ${CG_CYAN}%s${CG_RESET}" "$branch"
+    if [[ $dirty -eq 1 ]]; then
+      printf "  ${CG_YELLOW}● 有未提交变更${CG_RESET}"
+    else
+      printf "  ${CG_GREEN}● 干净${CG_RESET}"
+    fi
+    printf "  ${CG_DIM}远程:${CG_RESET} %s\n" "$remote_status"
+  else
+    printf "  ${CG_DIM}Git: 未初始化${CG_RESET}\n"
+  fi
+
+  # Profile 状态
+  printf "\n"
+  printf "  ${CG_BOLD}个人偏好${CG_RESET} ${CG_DIM}(%d/3)${CG_RESET}\n" "$profile_count"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  for pf in about-me preferences writing-style; do
+    if [[ -f "$CG_ROOT/profile/${pf}.md" ]]; then
+      printf "  ${CG_GREEN}✓${CG_RESET} ${CG_DIM}%s${CG_RESET}\n" "$pf"
+    else
+      printf "  ${CG_RED}✗${CG_RESET} ${CG_DIM}%s${CG_RESET}\n" "$pf"
+    fi
+  done
+
+  # 快捷操作
+  printf "\n"
+  printf "  ${CG_BOLD}快捷操作${CG_RESET}\n"
+  printf "  ${CG_DIM}─────────────────────────────────────────${CG_RESET}\n"
+  printf "  ${CG_CYAN}cg skills${CG_RESET}      查看所有 Skill\n"
+  printf "  ${CG_CYAN}cg projects${CG_RESET}    查看所有项目\n"
+  printf "  ${CG_CYAN}cg use <s> <p>${CG_RESET}  生成 AI prompt\n"
+  printf "  ${CG_CYAN}cg sync${CG_RESET}        同步到 GitHub\n"
+  printf "  ${CG_CYAN}cg pull${CG_RESET}        拉取最新更新\n"
+  printf "\n"
 }
 
 # ── edit ────────────────────────────────────────────────────
@@ -429,7 +628,6 @@ cg_edit() {
     skill)
       [[ -z "$name" ]] && { cg_error "用法: cg edit skill <name>"; return 1; }
       file="$CG_ROOT/skills/$name/SKILL.md"
-      # 如果不存在，创建目录和模板
       if [[ ! -f "$file" ]]; then
         cg_info "创建新 Skill: $name"
         mkdir -p "$CG_ROOT/skills/$name"
@@ -545,16 +743,17 @@ cg_check_conflicts() {
   local conflicted
   conflicted="$(git diff --name-only --diff-filter=U 2>/dev/null)"
   if [[ -n "$conflicted" ]]; then
+    printf "\n"
     cg_error "发现冲突！以下文件需要手动解决："
     while read -r f; do
-      [[ -n "$f" ]] && printf "  ${CG_RED}%s${CG_RESET}\n" "$f"
+      [[ -n "$f" ]] && printf "    ${CG_RED}▶ %s${CG_RESET}\n" "$f"
     done <<< "$conflicted"
     printf '\n'
     cg_info "解决步骤："
-    printf "  1. 编辑上述文件，找到冲突标记 (<<<<<<< ======= >>>>>>>)\n"
-    printf "  2. 保留需要的内容，删除冲突标记\n"
-    printf "  3. 运行 cg sync 重新提交\n"
-    printf "  4. 放弃合并: git merge --abort  或  git rebase --abort\n"
+    printf "    ${CG_DIM}1.${CG_RESET} 编辑上述文件，找到冲突标记 ${CG_YELLOW}<<<<<<< ======= >>>>>>>${CG_RESET}\n"
+    printf "    ${CG_DIM}2.${CG_RESET} 保留需要的内容，删除冲突标记\n"
+    printf "    ${CG_DIM}3.${CG_RESET} 运行 ${CG_CYAN}cg sync${CG_RESET} 重新提交\n"
+    printf "    ${CG_DIM}4.${CG_RESET} 放弃合并: ${CG_CYAN}git merge --abort${CG_RESET} 或 ${CG_CYAN}git rebase --abort${CG_RESET}\n"
     return 1
   fi
   return 0
@@ -569,16 +768,18 @@ cg_sync() {
     return 1
   fi
 
-  # 检查是否有变更
+  printf "\n"
+  cg_banner_small
+  printf "  ${CG_DIM}同步到 GitHub${CG_RESET}\n\n"
+
   if git diff --quiet HEAD 2>/dev/null && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
     cg_ok "没有变更，已是最新。"
+    printf "\n"
     return 0
   fi
 
-  # 暂存所有变更
   git add -A
 
-  # 生成提交信息
   local changes
   changes="$(git status --short | head -10)"
   local change_count
@@ -589,38 +790,28 @@ cg_sync() {
 Changed files:
 ${changes}"
 
-  # 提交
   git commit -m "$msg"
   cg_ok "已提交 ${change_count} 个文件变更。"
 
-  # 推送
   if git remote get-url origin &>/dev/null; then
-    # 先尝试推送
     local push_output
     push_output="$(git push origin HEAD 2>&1)" || true
-    printf "%s\n" "$push_output" | while read -r line; do
-      printf "  %s\n" "$line"
-    done
 
-    # 检查是否推送被拒绝（远程有更新）
     if echo "$push_output" | grep -qi "rejected\|non-fast-forward\|fetch first"; then
       cg_warn "远程有更新，先拉取再推送..."
       local branch
       branch="$(git rev-parse --abbrev-ref HEAD)"
 
-      # 用 rebase 方式拉取，保持提交历史干净
       git pull --rebase origin "$branch" 2>&1 | while read -r line; do
-        printf "  %s\n" "$line"
+        printf "    %s\n" "$line"
       done
 
-      # 检查 rebase 是否有冲突
       if ! cg_check_conflicts; then
         return 1
       fi
 
-      # rebase 成功，重新推送
       git push origin HEAD 2>&1 | while read -r line; do
-        printf "  %s\n" "$line"
+        printf "    %s\n" "$line"
       done
       cg_ok "已推送到远程仓库。"
     else
@@ -629,8 +820,9 @@ ${changes}"
   else
     cg_warn "没有配置远程仓库 (origin)。跳过推送。"
     cg_info "用以下命令添加远程仓库:"
-    printf "  git remote add origin git@github.com:<user>/context-garden.git\n"
+    printf "    git remote add origin git@github.com:<user>/context-garden.git\n"
   fi
+  printf "\n"
 }
 
 # ── pull ────────────────────────────────────────────────────
@@ -644,17 +836,18 @@ cg_pull() {
 
   if ! git remote get-url origin &>/dev/null; then
     cg_error "没有配置远程仓库 (origin)。"
-    cg_info "用以下命令添加远程仓库:"
-    printf "  git remote add origin git@github.com:<user>/context-garden.git\n"
     return 1
   fi
 
+  printf "\n"
+  cg_banner_small
+  printf "  ${CG_DIM}从 GitHub 拉取更新${CG_RESET}\n\n"
+
   local stashed=0
-  # 检查本地是否有未提交的变更
   if ! git diff --quiet HEAD 2>/dev/null || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
     cg_warn "本地有未提交的变更，先自动暂存 (stash)..."
     git stash -u 2>&1 | while read -r line; do
-      printf "  %s\n" "$line"
+      printf "    %s\n" "$line"
     done
     stashed=1
   fi
@@ -663,10 +856,9 @@ cg_pull() {
   branch="$(git rev-parse --abbrev-ref HEAD)"
   cg_info "从远程拉取更新 (origin/$branch)..."
   git pull origin "$branch" 2>&1 | while read -r line; do
-    printf "  %s\n" "$line"
+    printf "    %s\n" "$line"
   done
 
-  # 检查 pull 是否产生冲突
   if ! cg_check_conflicts; then
     if [[ $stashed -eq 1 ]]; then
       cg_warn "你的本地变更仍在 stash 中。"
@@ -678,9 +870,8 @@ cg_pull() {
   if [[ $stashed -eq 1 ]]; then
     cg_info "恢复本地变更..."
     git stash pop 2>&1 | while read -r line; do
-      printf "  %s\n" "$line"
+      printf "    %s\n" "$line"
     done
-    # stash pop 也可能产生冲突
     if ! cg_check_conflicts; then
       cg_info "你的变更仍在 stash 中: git stash list 查看"
       return 1
@@ -688,6 +879,7 @@ cg_pull() {
   fi
 
   cg_ok "已是最新。"
+  printf "\n"
 }
 
 # ── init ───────────────────────────────────────────────────
@@ -704,8 +896,8 @@ cg_init() {
   git commit -m "Initial commit: Context Garden V1+V2
 
 - profile/: 个人背景和偏好
-- projects/: 长期项目上下文 (eventalpha, aliyun-solutions, video-prompting)
-- skills/: 可复用 AI 工作流 (pitch-coach, finance-hackathon, cloud-solution-architect, video-prompt-writer)
+- projects/: 长期项目上下文
+- skills/: 可复用 AI 工作流
 - templates/: 常用输出模板
 - memory/: 跨项目重要结论
 - bin/cg: 命令行工具
@@ -738,12 +930,12 @@ cg_delete() {
         cg_error "Skill 不存在: $name"
         return 1
       fi
-      # 列出将被删除的文件
       local file_count
       file_count=$(find "$target_dir" -type f | wc -l | tr -d ' ')
-      cg_warn "将删除 Skill "$name" ($file_count 个文件):"
+      printf "\n"
+      cg_warn "将删除 Skill \"$name\" ($file_count 个文件):"
       find "$target_dir" -type f -exec basename {} \; | sort | while read -r f; do
-        printf "  %s\n" "$f"
+        printf "    ${CG_RED}▶ %s${CG_RESET}\n" "$f"
       done
       ;;
     context|project)
@@ -754,9 +946,10 @@ cg_delete() {
       fi
       local file_count
       file_count=$(find "$target_dir" -type f | wc -l | tr -d ' ')
-      cg_warn "将删除项目 "$name" ($file_count 个文件):"
+      printf "\n"
+      cg_warn "将删除项目 \"$name\" ($file_count 个文件):"
       find "$target_dir" -type f -exec basename {} \; | sort | while read -r f; do
-        printf "  %s\n" "$f"
+        printf "    ${CG_RED}▶ %s${CG_RESET}\n" "$f"
       done
       ;;
     *)
@@ -766,8 +959,7 @@ cg_delete() {
       ;;
   esac
 
-  # 确认
-  printf "\n${CG_BOLD}确认删除？[y/N]${CG_RESET} "
+  printf "\n  ${CG_BOLD}${CG_YELLOW}确认删除？[y/N]${CG_RESET} "
   read -r confirm
   if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     cg_info "已取消。"
@@ -821,6 +1013,9 @@ main() {
     memory|mem)
       cg_show_memory "${1:-}"
       ;;
+    status|st)
+      cg_status
+      ;;
     edit)
       [[ $# -lt 1 ]] && { cg_error "用法: cg edit <skill|context|memory|profile> <name>"; cg_help; return 1; }
       cg_edit "$1" "${2:-}"
@@ -846,7 +1041,7 @@ main() {
       ;;
     *)
       cg_error "未知命令: $cmd"
-      echo
+      printf '\n'
       cg_help
       return 1
       ;;
