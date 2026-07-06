@@ -122,6 +122,185 @@ cg_term_width() {
   echo "$w"
 }
 
+# ── Markdown 渲染 ──────────────────────────────────────────
+# 优先使用 glow / mdcat，回退到内置 awk 渲染器
+cg_render_md() {
+  local file="$1"
+
+  # glow (Charm) — 最佳终端 markdown 渲染
+  if command -v glow &>/dev/null; then
+    glow --style dark "$file" 2>/dev/null && return 0
+  fi
+
+  # mdcat — 次选
+  if command -v mdcat &>/dev/null; then
+    mdcat "$file" 2>/dev/null && return 0
+  fi
+
+  # 内置 awk 渲染器
+  cat "$file" | awk '
+    function render_inline(text,    before, mtext, after) {
+      # **bold**
+      while (match(text, /\*\*[^*]+\*\*/)) {
+        before = substr(text, 1, RSTART - 1)
+        mtext  = substr(text, RSTART + 2, RLENGTH - 4)
+        after  = substr(text, RSTART + RLENGTH)
+        text = before "\033[1m" mtext "\033[0m" after
+      }
+      # `code`
+      while (match(text, /`[^`]+`/)) {
+        before = substr(text, 1, RSTART - 1)
+        mtext  = substr(text, RSTART + 1, RLENGTH - 2)
+        after  = substr(text, RSTART + RLENGTH)
+        text = before "\033[36m" mtext "\033[0m" after
+      }
+      # [text](url) → text
+      while (match(text, /\[[^]]+\]\([^)]+\)/)) {
+        before = substr(text, 1, RSTART - 1)
+        mtext  = substr(text, RSTART + 1)
+        sub(/\].*/, "", mtext)
+        after  = substr(text, RSTART + RLENGTH)
+        text = before mtext after
+      }
+      return text
+    }
+
+    BEGIN { in_code=0; in_fm=0; fm_count=0 }
+
+    # YAML frontmatter ---
+    /^---[[:space:]]*$/ && fm_count < 2 {
+      fm_count++
+      in_fm = (fm_count == 1)
+      if (in_fm) printf "  \033[2m── frontmatter ──\033[0m\n"
+      else printf "\n"
+      next
+    }
+    in_fm {
+      printf "  \033[2m%s\033[0m\n", $0
+      next
+    }
+
+    # Code block ```
+    /^```/ {
+      in_code = !in_code
+      if (in_code) printf "  \033[2m"
+      else printf "\033[0m\n"
+      next
+    }
+    in_code {
+      printf "  %s\n", $0
+      next
+    }
+
+    # H1
+    /^# / {
+      text = render_inline(substr($0, 3))
+      printf "\n  \033[1m\033[32m%s\033[0m\n", text
+      printf "  \033[2m"
+      len = length(text)
+      # strip ANSI for length calc — approximate
+      gsub(/\033\[[0-9;]*m/, "", text)
+      for (i = 0; i < length(text); i++) printf "─"
+      printf "\033[0m\n\n"
+      next
+    }
+    # H2
+    /^## / {
+      text = render_inline(substr($0, 4))
+      printf "\n  \033[1m\033[36m▸ %s\033[0m\n\n", text
+      next
+    }
+    # H3
+    /^### / {
+      text = render_inline(substr($0, 5))
+      printf "\n  \033[1m%s\033[0m\n", text
+      next
+    }
+    # H4
+    /^#### / {
+      text = render_inline(substr($0, 6))
+      printf "\n  \033[1m\033[2m%s\033[0m\n", text
+      next
+    }
+
+    # Horizontal rule
+    /^---[[:space:]]*$/ || /^\*\*\*[[:space:]]*$/ {
+      printf "  \033[2m────────────────────────────────────────────\033[0m\n"
+      next
+    }
+
+    # Blockquote
+    /^> / {
+      text = render_inline(substr($0, 3))
+      printf "  \033[2m│\033[0m %s\n", text
+      next
+    }
+    /^>/ {
+      text = render_inline(substr($0, 2))
+      printf "  \033[2m│\033[0m %s\n", text
+      next
+    }
+
+    # Task list: - [ ]
+    /^[[:space:]]*- \[ \]/ {
+      text = render_inline(substr($0, index($0, "]") + 2))
+      printf "    \033[2m☐\033[0m %s\n", text
+      next
+    }
+    # Task list: - [x]
+    /^[[:space:]]*- \[x\]/ {
+      text = render_inline(substr($0, index($0, "]") + 2))
+      printf "    \033[32m☑\033[0m %s\n", text
+      next
+    }
+
+    # Numbered list
+    /^[[:space:]]*[0-9]+\. / {
+      line = $0
+      match(line, /[0-9]+\./)
+      num = substr(line, RSTART, RLENGTH - 1)
+      text = render_inline(substr(line, RSTART + RLENGTH + 1))
+      printf "    \033[36m%s.\033[0m %s\n", num, text
+      next
+    }
+
+    # Unordered list
+    /^[[:space:]]*[-*] / {
+      text = render_inline(substr($0, index($0, "- ") + 2))
+      # handle indentation
+      indent = ""
+      match($0, /^[[:space:]]*/)
+      if (RLENGTH > 2) indent = "  "
+      printf "  %s\033[36m•\033[0m %s\n", indent, text
+      next
+    }
+
+    # Table separator
+    /^\|[-: |]+\|$/ {
+      printf "  \033[2m%s\033[0m\n", $0
+      next
+    }
+
+    # Table row
+    /^\|/ {
+      printf "  %s\n", $0
+      next
+    }
+
+    # Empty line
+    /^$/ {
+      printf "\n"
+      next
+    }
+
+    # Default
+    {
+      text = render_inline($0)
+      printf "  %s\n", text
+    }
+  '
+}
+
 # ── 帮助 ────────────────────────────────────────────────────
 cg_help() {
   cg_banner
@@ -173,6 +352,7 @@ cg_help() {
   printf "  ${CG_DIM}•${CG_RESET}  ${CG_CYAN}cg use${CG_RESET} 输出可直接复制给 ChatGPT / Claude / Cursor\n"
   printf "  ${CG_DIM}•${CG_RESET}  Skill 目录可包含多个 ${CG_CYAN}.md${CG_RESET} 文件\n"
   printf "  ${CG_DIM}•${CG_RESET}  ${CG_CYAN}CG_EDITOR${CG_RESET} 环境变量可指定编辑器\n"
+  printf "  ${CG_DIM}•${CG_RESET}  ${CG_CYAN}glow${CG_DIM} / ${CG_CYAN}mdcat${CG_DIM} 已安装时自动使用，否则用内置渲染器${CG_RESET}\n"
   printf "  ${CG_DIM}•${CG_RESET}  无参数运行 ${CG_CYAN}cg${CG_RESET} 显示此帮助\n\n"
 }
 
@@ -252,7 +432,7 @@ cg_show_skill() {
       fi
       printf "${CG_BOLD}${CG_CYAN}  ┌─ %s ─${CG_RESET}\n" "$(basename "$f")"
       printf "\n"
-      cat "$f"
+      cg_render_md "$f"
       first=0
     done
     if [[ $first -eq 1 ]]; then
@@ -271,7 +451,7 @@ cg_show_skill() {
       done
       return 1
     fi
-    cat "$target_file"
+    cg_render_md "$target_file"
   else
     if [[ ! -f "$skill_file" ]]; then
       cg_error "SKILL.md 不存在: $skill_file"
@@ -281,7 +461,7 @@ cg_show_skill() {
       done
       return 1
     fi
-    cat "$skill_file"
+    cg_render_md "$skill_file"
 
     local other_files=()
     for f in "$skill_dir"/*.md; do
@@ -368,7 +548,7 @@ cg_show_context() {
     cg_list_projects
     return 1
   fi
-  cat "$ctx_file"
+  cg_render_md "$ctx_file"
 }
 
 # ── use (拼接 Skill + Context) ─────────────────────────────
@@ -496,7 +676,7 @@ cg_show_template() {
     cg_list_templates
     return 1
   fi
-  cat "$tpl_file"
+  cg_render_md "$tpl_file"
 }
 
 # ── profile ─────────────────────────────────────────────────
@@ -508,7 +688,7 @@ cg_show_profile() {
   for pf in about-me.md preferences.md writing-style.md; do
     local file="$profile_dir/$pf"
     if [[ -f "$file" ]]; then
-      cat "$file"
+      cg_render_md "$file"
       printf '\n'
     else
       cg_warn "缺少: profile/$pf"
@@ -535,7 +715,7 @@ cg_show_memory() {
       cg_error "记忆文件不存在: $file"
       return 1
     fi
-    cat "$file"
+    cg_render_md "$file"
   else
     cg_header "Memory Files" "$CG_ICON_MEMORY"
     for mem_file in "$mem_dir"/*.md; do
