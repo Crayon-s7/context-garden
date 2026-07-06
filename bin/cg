@@ -74,6 +74,7 @@ Context Garden CLI — 管理个人 AI 上下文
   edit memory <type>          编辑记忆文件
   edit profile <type>         编辑个人偏好 (about-me | preferences | writing-style)
   sync                        同步到 GitHub (git add + commit + push)
+  pull                        从 GitHub 拉取最新更新 (git pull)
   init                        初始化 git 仓库（如果尚未初始化）
   path                        显示 Context Garden 仓库路径
   help                        显示此帮助
@@ -86,6 +87,7 @@ Context Garden CLI — 管理个人 AI 上下文
   cg use pitch-coach eventalpha | pbcopy    # 复制到剪贴板
   cg edit skill pitch-coach
   cg sync
+  cg pull
 
 环境变量:
   CG_EDITOR    编辑器（默认 $EDITOR 或 vim）
@@ -582,6 +584,49 @@ ${changes}"
   fi
 }
 
+# ── pull ────────────────────────────────────────────────────
+cg_pull() {
+  cd "$CG_ROOT"
+
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    cg_error "不是 git 仓库。请先运行: cg init"
+    return 1
+  fi
+
+  if ! git remote get-url origin &>/dev/null; then
+    cg_error "没有配置远程仓库 (origin)。"
+    cg_info "用以下命令添加远程仓库:"
+    printf "  git remote add origin git@github.com:<user>/context-garden.git\n"
+    return 1
+  fi
+
+  local stashed=0
+  # 检查本地是否有未提交的变更
+  if ! git diff --quiet HEAD 2>/dev/null || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    cg_warn "本地有未提交的变更，先自动暂存 (stash)..."
+    git stash -u 2>&1 | while read -r line; do
+      printf "  %s\n" "$line"
+    done
+    stashed=1
+  fi
+
+  local branch
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  cg_info "从远程拉取更新 (origin/$branch)..."
+  git pull origin "$branch" 2>&1 | while read -r line; do
+    printf "  %s\n" "$line"
+  done
+
+  if [[ $stashed -eq 1 ]]; then
+    cg_info "恢复本地变更..."
+    git stash pop 2>&1 | while read -r line; do
+      printf "  %s\n" "$line"
+    done
+  fi
+
+  cg_ok "已是最新。"
+}
+
 # ── init ───────────────────────────────────────────────────
 cg_init() {
   cd "$CG_ROOT"
@@ -659,6 +704,9 @@ main() {
       ;;
     sync)
       cg_sync
+      ;;
+    pull)
+      cg_pull
       ;;
     init)
       cg_init
