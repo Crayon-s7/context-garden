@@ -538,6 +538,26 @@ EOF
   "$editor" "$file"
 }
 
+# ── 冲突检测 ────────────────────────────────────────────────
+cg_check_conflicts() {
+  local conflicted
+  conflicted="$(git diff --name-only --diff-filter=U 2>/dev/null)"
+  if [[ -n "$conflicted" ]]; then
+    cg_error "发现冲突！以下文件需要手动解决："
+    while read -r f; do
+      [[ -n "$f" ]] && printf "  ${CG_RED}%s${CG_RESET}\n" "$f"
+    done <<< "$conflicted"
+    printf '\n'
+    cg_info "解决步骤："
+    printf "  1. 编辑上述文件，找到冲突标记 (<<<<<<< ======= >>>>>>>)\n"
+    printf "  2. 保留需要的内容，删除冲突标记\n"
+    printf "  3. 运行 cg sync 重新提交\n"
+    printf "  4. 放弃合并: git merge --abort  或  git rebase --abort\n"
+    return 1
+  fi
+  return 0
+}
+
 # ── sync ────────────────────────────────────────────────────
 cg_sync() {
   cd "$CG_ROOT"
@@ -573,10 +593,37 @@ ${changes}"
 
   # 推送
   if git remote get-url origin &>/dev/null; then
-    git push origin HEAD 2>&1 | while read -r line; do
+    # 先尝试推送
+    local push_output
+    push_output="$(git push origin HEAD 2>&1)" || true
+    printf "%s\n" "$push_output" | while read -r line; do
       printf "  %s\n" "$line"
     done
-    cg_ok "已推送到远程仓库。"
+
+    # 检查是否推送被拒绝（远程有更新）
+    if echo "$push_output" | grep -qi "rejected\|non-fast-forward\|fetch first"; then
+      cg_warn "远程有更新，先拉取再推送..."
+      local branch
+      branch="$(git rev-parse --abbrev-ref HEAD)"
+
+      # 用 rebase 方式拉取，保持提交历史干净
+      git pull --rebase origin "$branch" 2>&1 | while read -r line; do
+        printf "  %s\n" "$line"
+      done
+
+      # 检查 rebase 是否有冲突
+      if ! cg_check_conflicts; then
+        return 1
+      fi
+
+      # rebase 成功，重新推送
+      git push origin HEAD 2>&1 | while read -r line; do
+        printf "  %s\n" "$line"
+      done
+      cg_ok "已推送到远程仓库。"
+    else
+      cg_ok "已推送到远程仓库。"
+    fi
   else
     cg_warn "没有配置远程仓库 (origin)。跳过推送。"
     cg_info "用以下命令添加远程仓库:"
@@ -617,11 +664,25 @@ cg_pull() {
     printf "  %s\n" "$line"
   done
 
+  # 检查 pull 是否产生冲突
+  if ! cg_check_conflicts; then
+    if [[ $stashed -eq 1 ]]; then
+      cg_warn "你的本地变更仍在 stash 中。"
+      cg_info "解决冲突后运行: git stash pop 恢复本地变更"
+    fi
+    return 1
+  fi
+
   if [[ $stashed -eq 1 ]]; then
     cg_info "恢复本地变更..."
     git stash pop 2>&1 | while read -r line; do
       printf "  %s\n" "$line"
     done
+    # stash pop 也可能产生冲突
+    if ! cg_check_conflicts; then
+      cg_info "你的变更仍在 stash 中: git stash list 查看"
+      return 1
+    fi
   fi
 
   cg_ok "已是最新。"
